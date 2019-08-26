@@ -1,11 +1,14 @@
+import time
+import uuid
+
 import redis
 
 def acquire_lock(conn, lockname, acquire_timeout=10):
-    identifier = str(uuid.uuid64())
+    identifier = str(uuid.uuid4())
 
     end = time.time() + acquire_timeout
     while time.time() < end:
-        if conn.setnx('lock:' + lockname, identifier):
+        if conn.setnx(lockname, identifier):
             return identifier
 
         time.sleep(.001)
@@ -13,22 +16,25 @@ def acquire_lock(conn, lockname, acquire_timeout=10):
     return False
 
 def release_lock(conn, lockname, identifier):
-    pipe = conn.pipeline(True)
-    lockname = 'lock:' + lockname
+    with conn.pipeline(True) as pipe:
+        while True:
+            try:
+                pipe.watch(lockname)
 
-    while True:
-        try:
-            pipe.watch(lockname)
-            if pipe.get(lockname) == identifier:
-                pipe.multi()
-                pipe.delete(lockname)
-                pipe.execute()
-                return True
+                value = pipe.get(lockname)
+                if value is None:
+                    break
 
-            pipe.unwatch()
-            break
+                if value.decode('utf-8') == identifier:
+                    pipe.multi()
+                    pipe.delete(lockname)
+                    pipe.execute()
+                    return True
 
-        except redis.exceptions.WatchError:
-            pass
+                pipe.unwatch()
+                break
+
+            except redis.exceptions.WatchError:
+                pass
 
     return False
